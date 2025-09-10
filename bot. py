@@ -1,0 +1,124 @@
+import asyncio
+import sqlite3
+import os
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import Command
+
+# === Токен из Railway ===
+TOKEN = os.getenv("BOT_TOKEN")
+
+# === Оклад за 1 день ===
+DAILY_SALARY = 500
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+# --- Работа с базой данных ---
+def init_db():
+    conn = sqlite3.connect("workdays.db")
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS workdays (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            date TEXT,
+            UNIQUE(user_id, date)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def add_day(user_id: int):
+    conn = sqlite3.connect("workdays.db")
+    cur = conn.cursor()
+    today = datetime.now().strftime("%Y-%m-%d")
+    cur.execute("INSERT OR IGNORE INTO workdays (user_id, date) VALUES (?, ?)", (user_id, today))
+    conn.commit()
+    conn.close()
+
+def get_stats(user_id: int):
+    conn = sqlite3.connect("workdays.db")
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM workdays WHERE user_id = ?", (user_id,))
+    days = cur.fetchone()[0]
+    conn.close()
+    return days, days * DAILY_SALARY
+
+def reset_data(user_id: int):
+    conn = sqlite3.connect("workdays.db")
+    cur = conn.cursor()
+    cur.execute("DELETE FROM workdays WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_month_report(user_id: int):
+    conn = sqlite3.connect("workdays.db")
+    cur = conn.cursor()
+    cur.execute("SELECT date FROM workdays WHERE user_id = ? ORDER BY date", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return "📭 За этот месяц у тебя нет отметок."
+
+    report = "📅 Отчёт по рабочим дням:\n"
+    for i, (date,) in enumerate(rows, start=1):
+        report += f"{i}. {date} ✅\n"
+    report += f"\nВсего дней: {len(rows)}\n💰 Оклад: {len(rows) * DAILY_SALARY}"
+    return report
+
+# --- Главное меню ---
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="✅ Я пришёл на работу")],
+        [KeyboardButton(text="📊 Моя статистика")],
+        [KeyboardButton(text="📅 Отчёт за месяц")],
+        [KeyboardButton(text="❌ Сбросить данные")]
+    ],
+    resize_keyboard=True
+)
+
+# --- Хэндлеры ---
+@dp.message(Command("start"))
+async def start_handler(message: types.Message):
+    await message.answer(
+        "Привет! 👋 Я бот *Energy Saving*.\n"
+        "Отмечай каждый рабочий день, а я буду считать твою зарплату 💰.",
+        reply_markup=main_menu,
+        parse_mode="Markdown"
+    )
+
+@dp.message(lambda msg: msg.text == "✅ Я пришёл на работу")
+async def workday_handler(message: types.Message):
+    user_id = message.from_user.id
+    add_day(user_id)
+    days, salary = get_stats(user_id)
+    await message.answer(f"Отлично! 📅 Ты отметил {days} рабочих дней.\n💰 Текущий оклад: {salary}")
+
+@dp.message(lambda msg: msg.text == "📊 Моя статистика")
+async def stats_handler(message: types.Message):
+    user_id = message.from_user.id
+    days, salary = get_stats(user_id)
+    await message.answer(f"📊 Статистика:\nРабочих дней: {days}\nОклад: {salary}")
+
+@dp.message(lambda msg: msg.text == "📅 Отчёт за месяц")
+async def report_handler(message: types.Message):
+    user_id = message.from_user.id
+    report = get_month_report(user_id)
+    await message.answer(report)
+
+@dp.message(lambda msg: msg.text == "❌ Сбросить данные")
+async def reset_handler(message: types.Message):
+    user_id = message.from_user.id
+    reset_data(user_id)
+    await message.answer("✅ Все данные сброшены!")
+
+# --- Запуск ---
+async def main():
+    init_db()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
